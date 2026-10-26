@@ -32,9 +32,14 @@ class TakeoutScanner(private val rootPath: String, private val db: MigrationStat
                 val potentialJsonNames = listOf(
                     "$fileName.json",
                     "$nameWithoutExt.json",
+                    "$fileName.supplemental-metadata.json",
+                    "$nameWithoutExt.supplemental-metadata.json",
                     "$truncatedFileName.json",
                     "$truncatedBaseName.json",
-                    if (ext.isNotEmpty()) "$truncatedBaseName.$ext.json" else null
+                    "$truncatedFileName.supplemental-metadata.json",
+                    "$truncatedBaseName.supplemental-metadata.json",
+                    if (ext.isNotEmpty()) "$truncatedBaseName.$ext.json" else null,
+                    if (ext.isNotEmpty()) "$truncatedBaseName.$ext.supplemental-metadata.json" else null
                 ).filterNotNull().distinct()
 
                 var jsonPath: String? = null

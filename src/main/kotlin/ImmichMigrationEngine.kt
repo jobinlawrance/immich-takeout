@@ -47,20 +47,20 @@ class ImmichMigrationEngine(
         val unsynced = db.getUnsyncedFiles()
         println("Found ${unsynced.size} items to upload to Immich.")
 
-        val semaphore = Semaphore(concurrency)
-
-        for (record in unsynced) {
-            launch(Dispatchers.IO) {
-                semaphore.acquire()
-                try {
-                    uploadAsset(record)
-                } catch (e: Exception) {
-                    println("Error uploading ${record.fileName}: ${e.message}")
-                } finally {
-                    semaphore.release()
-                }
-            }
-        }
+//        val semaphore = Semaphore(concurrency)
+//
+//        for (record in unsynced) {
+//            launch(Dispatchers.IO) {
+//                semaphore.acquire()
+//                try {
+//                    uploadAsset(record)
+//                } catch (e: Exception) {
+//                    println("Error uploading ${record.fileName}: ${e.message}")
+//                } finally {
+//                    semaphore.release()
+//                }
+//            }
+//        }
     }
 
     private suspend fun syncServerState() {
