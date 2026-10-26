@@ -25,6 +25,17 @@ class ImmichMigrationEngine(
         install(ContentNegotiation) {
             json(Json { ignoreUnknownKeys = true; isLenient = true })
         }
+        engine {
+            requestTimeout = 60_000 // 60 seconds per file upload
+        }
+    }
+
+    private fun printProgress(completed: Int, total: Int, currentFile: String) {
+        val percentage = (completed * 100) / total
+        val truncatedName = if (currentFile.length > 30) "${currentFile.take(27)}..." else currentFile.padEnd(30)
+        print("\r[Progress] [$completed/$total] ($percentage%) Uploading: $truncatedName")
+        System.out.flush() // Crucial: forces the terminal to render the progress line immediately
+        if (completed == total) println()
     }
 
     private val jsonParser = Json { ignoreUnknownKeys = true }
@@ -55,23 +66,30 @@ class ImmichMigrationEngine(
     private suspend fun syncServerState() {
         println("Syncing existing assets from Immich server...")
         try {
-            val response: List<ImmichAssetResponse> = client.get("$serverUrl/api/assets") {
+            // Immich requires search parameters or uses /api/search/metadata or paginated assets.
+            // If /api/assets returns a search object or requires query params, catch it gracefully
+            // so it doesn't crash the migration.
+            val response = client.get("$serverUrl/api/assets") {
                 header("x-api-key", apiKey)
-            }.body()
-
-            response.forEach { asset ->
-                db.registerServerAsset(asset.id, asset.checksum, asset.originalFileName)
+            }
+            if (response.status.isSuccess()) {
+                val assets: List<ImmichAssetResponse> = response.body()
+                assets.forEach { asset ->
+                    db.registerServerAsset(asset.id, asset.checksum, asset.originalFileName ?: "unknown")
+                }
             }
 
-            // Populate existing server albums for caching
-            val albums: List<ImmichAlbumResponse> = client.get("$serverUrl/api/albums") {
+            val albumsResp = client.get("$serverUrl/api/albums") {
                 header("x-api-key", apiKey)
-            }.body()
-            albums.forEach { albumCache[it.albumName] = it.id }
+            }
+            if (albumsResp.status.isSuccess()) {
+                val albums: List<ImmichAlbumResponse> = albumsResp.body()
+                albums.forEach { albumCache[it.albumName] = it.id }
+            }
 
             println("Server state synced successfully.")
         } catch (e: Exception) {
-            println("Warning: Failed to fetch full server state (${e.message}). Proceeding with upload.")
+            println("Notice: Skipping full server state pre-load (${e.message}). Proceeding with upload/duplicate check.")
         }
     }
 
@@ -79,7 +97,13 @@ class ImmichMigrationEngine(
         val file = File(record.filePath)
         if (!file.exists()) return
 
-        val metadata = parseSidecar(record.jsonSidecarState)
+        // Skip unsupported file extensions like Motion Photo metadata wrappers (.MP)
+        if (record.fileName.endsWith(".MP", ignoreCase = true)) {
+            return
+        }
+
+        // Parse metadata or fallback to file system modification time to satisfy Immich requirements
+        val metadata = parseSidecar(record.jsonSidecarPath, file)
 
         val response = client.submitFormWithBinaryData(
             url = "$serverUrl/api/assets",
@@ -90,7 +114,13 @@ class ImmichMigrationEngine(
                 })
                 append("deviceAssetId", "takeout-${record.sha256}")
                 append("deviceId", "kotlin-takeout-migrator")
-                metadata.timestamp?.let { append("fileCreatedAt", it) }
+
+                // Always provide valid ISO 8601 strings to satisfy Immich validation
+                metadata.timestamp?.let {
+                    append("fileCreatedAt", it)
+                    append("fileModifiedAt", it)
+                }
+
                 metadata.latitude?.let { append("latitude", it.toString()) }
                 metadata.longitude?.let { append("longitude", it.toString()) }
             }
@@ -102,14 +132,39 @@ class ImmichMigrationEngine(
             val responseBody = response.bodyAsText()
             val createdAsset = jsonParser.decodeFromString<ImmichAssetResponse>(responseBody)
 
-            // Assign to Album if category exists
             if (record.albumName != null) {
                 assignToAlbum(record.albumName, createdAsset.id)
             }
-            println("Successfully migrated: ${record.fileName}")
         } else {
-            println("Failed upload for ${record.fileName}: ${response.status} - ${response.bodyAsText()}")
+            throw Exception("${response.status} - ${response.bodyAsText()}")
         }
+    }
+
+    private fun parseSidecar(jsonPath: String?, fallbackFile: File): TakeoutMetadata {
+        if (jsonPath != null) {
+            try {
+                val jsonString = File(jsonPath).readText()
+                val sidecar = jsonParser.decodeFromString<TakeoutSidecar>(jsonString)
+                val epochSec = sidecar.photoTakenTime?.timestamp?.toLongOrNull()
+                if (epochSec != null && epochSec > 0) {
+                    val isoTimestamp = Instant.ofEpochSecond(epochSec).toString()
+                    // Uncomment this line temporarily if you want to verify it's working:
+                    // println("Found sidecar date for ${fallbackFile.name}: $isoTimestamp")
+                    return TakeoutMetadata(
+                        timestamp = isoTimestamp,
+                        latitude = sidecar.geoData?.latitude?.takeIf { it != 0.0 },
+                        longitude = sidecar.geoData?.longitude?.takeIf { it != 0.0 }
+                    )
+                }
+            } catch (e: Exception) {
+                println("Failed parsing json for ${fallbackFile.name}: ${e.message}")
+            }
+        }
+
+        // If it reaches here, no valid JSON sidecar was matched!
+        // println("WARNING: No sidecar found for ${fallbackFile.name}, using file mod time.")
+        val fallbackInstant = Instant.ofEpochMilli(fallbackFile.lastModified()).toString()
+        return TakeoutMetadata(timestamp = fallbackInstant)
     }
 
     private suspend fun assignToAlbum(albumName: String, assetId: String) {
@@ -139,24 +194,6 @@ class ImmichMigrationEngine(
             println("Failed to create/fetch album $name: ${e.message}")
         }
         return null
-    }
-
-    private fun parseSidecar(jsonPath: String?): TakeoutMetadata {
-        if (jsonPath == null) return TakeoutMetadata()
-        return try {
-            val jsonString = File(jsonPath).readText()
-            val sidecar = jsonParser.decodeFromString<TakeoutSidecar>(jsonString)
-            val isoTimestamp = sidecar.photoTakenTime?.timestamp?.toLongOrNull()?.let {
-                Instant.ofEpochSecond(it).toString()
-            }
-            TakeoutMetadata(
-                timestamp = isoTimestamp,
-                latitude = sidecar.geoData?.latitude?.takeIf { it != 0.0 },
-                longitude = sidecar.geoData?.longitude?.takeIf { it != 0.0 }
-            )
-        } catch (e: Exception) {
-            TakeoutMetadata()
-        }
     }
 
     private val TakeoutRecord.jsonSidecarState: String? get() = this.jsonSidecarPath

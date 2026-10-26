@@ -61,7 +61,7 @@ data class TakeoutMetadata(
 @Serializable
 data class ImmichAssetResponse(
     val id: String,
-    val originalFileName: String,
+    val originalFileName: String? = null,
     val checksum: String? = null
 )
 

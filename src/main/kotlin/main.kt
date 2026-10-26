@@ -6,6 +6,7 @@ suspend fun main(args: Array<String>) {
     val apiKey = args.getOrNull(2) ?: "YOUR_IMMICH_API_KEY"
 
     println("=== Google Takeout to Immich Migrator ===")
+    val dbPath = "/root/jobin-dump/takeout_migration.duckdb"
 
     val db = MigrationStateDb("takeout_migration.duckdb")
 

@@ -2,11 +2,10 @@ plugins {
     alias(libs.plugins.kotlin.jvm)
     alias(ktorLibs.plugins.ktor)
     alias(libs.plugins.kotlin.serialization)
-    id("org.graalvm.buildtools.native") version "1.1.17"
 }
 
 group = "wtf.jobin"
-version = "1.0.0-SNAPSHOT"
+version = "1.0.0"
 
 // Explicitly define your main class here so both Gradle and GraalVM find it
 application {
@@ -35,14 +34,15 @@ dependencies {
     testImplementation(ktorLibs.server.testHost)
 }
 
-graalvmNative {
-    binaries {
-        named("main") {
-            imageName.set("takeout-migrator")
-            mainClass.set("wtf.jobin.MainKt") // Adjust to match your package/file name
-            buildArgs.add("--enable-native-access=ALL-UNNAMED")
-            buildArgs.add("--no-fallback")
-        }
+tasks.jar {
+    manifest {
+        attributes["Main-Class"] = "wtf.jobin.MainKt"
     }
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
 
+    // Bundle all runtime dependencies into the jar
+    from(configurations.runtimeClasspath.get().map { if (it.isDirectory) it else zipTree(it) })
+
+    // Exclude security signature files from dependencies to prevent security exceptions
+    exclude("META-INF/*.SF", "META-INF/*.DSA", "META-INF/*.RSA")
 }
