@@ -1,0 +1,4 @@
+/takeout_migration.duckdb
+/build
+/gradle
+/takeout_migration.duckdb.wal
