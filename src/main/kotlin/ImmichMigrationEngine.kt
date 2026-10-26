@@ -14,6 +14,7 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.serialization.json.Json
 import java.io.File
 import java.time.Instant
+import java.util.concurrent.atomic.AtomicInteger  // <--- Make sure this import is at the top of your file
 
 class ImmichMigrationEngine(
     private val serverUrl: String,
@@ -31,11 +32,14 @@ class ImmichMigrationEngine(
     }
 
     private fun printProgress(completed: Int, total: Int, currentFile: String) {
-        val percentage = (completed * 100) / total
-        val truncatedName = if (currentFile.length > 30) "${currentFile.take(27)}..." else currentFile.padEnd(30)
+        val percentage = if (total > 0) (completed * 100) / total else 0
+        val truncatedName = if (currentFile.length > 35) "${currentFile.take(32)}..." else currentFile.padEnd(35)
+        // \r returns the cursor to the beginning of the line to overwrite it cleanly
         print("\r[Progress] [$completed/$total] ($percentage%) Uploading: $truncatedName")
-        System.out.flush() // Crucial: forces the terminal to render the progress line immediately
-        if (completed == total) println()
+        System.out.flush() // Crucial for immediate terminal rendering
+        if (completed == total) {
+            println() // Print a final newline when finished
+        }
     }
 
     private val jsonParser = Json { ignoreUnknownKeys = true }
@@ -45,22 +49,29 @@ class ImmichMigrationEngine(
         syncServerState()
 
         val unsynced = db.getUnsyncedFiles()
-        println("Found ${unsynced.size} items to upload to Immich.")
+        val totalItems = unsynced.size
+        println("Found $totalItems items to upload to Immich.")
 
-//        val semaphore = Semaphore(concurrency)
-//
-//        for (record in unsynced) {
-//            launch(Dispatchers.IO) {
-//                semaphore.acquire()
-//                try {
-//                    uploadAsset(record)
-//                } catch (e: Exception) {
-//                    println("Error uploading ${record.fileName}: ${e.message}")
-//                } finally {
-//                    semaphore.release()
-//                }
-//            }
-//        }
+        val semaphore = Semaphore(concurrency)
+        val completedCount = AtomicInteger(0)
+
+        unsynced.forEach { record ->
+            launch(Dispatchers.IO) {
+                semaphore.acquire()
+                try {
+                    uploadAsset(record)
+                    val currentCount = completedCount.incrementAndGet()
+                    printProgress(currentCount, totalItems, record.fileName)
+                } catch (e: Exception) {
+                    val currentCount = completedCount.incrementAndGet()
+                    printProgress(currentCount, totalItems, record.fileName)
+                    // Optionally log error without breaking progress line:
+                    // println("\nError uploading ${record.fileName}: ${e.message}")
+                } finally {
+                    semaphore.release()
+                }
+            }
+        }
     }
 
     private suspend fun syncServerState() {
