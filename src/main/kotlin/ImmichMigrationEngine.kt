@@ -152,6 +152,7 @@ class ImmichMigrationEngine(
     }
 
     private fun parseSidecar(jsonPath: String?, fallbackFile: File): TakeoutMetadata {
+        // 1. Try reading from JSON sidecar first
         if (jsonPath != null) {
             try {
                 val jsonString = File(jsonPath).readText()
@@ -159,8 +160,6 @@ class ImmichMigrationEngine(
                 val epochSec = sidecar.photoTakenTime?.timestamp?.toLongOrNull()
                 if (epochSec != null && epochSec > 0) {
                     val isoTimestamp = Instant.ofEpochSecond(epochSec).toString()
-                    // Uncomment this line temporarily if you want to verify it's working:
-                    // println("Found sidecar date for ${fallbackFile.name}: $isoTimestamp")
                     return TakeoutMetadata(
                         timestamp = isoTimestamp,
                         latitude = sidecar.geoData?.latitude?.takeIf { it != 0.0 },
@@ -168,14 +167,36 @@ class ImmichMigrationEngine(
                     )
                 }
             } catch (e: Exception) {
-                println("Failed parsing json for ${fallbackFile.name}: ${e.message}")
+                // Ignore JSON parsing errors and move to filename/filesystem fallbacks
             }
         }
 
-        // If it reaches here, no valid JSON sidecar was matched!
-        // println("WARNING: No sidecar found for ${fallbackFile.name}, using file mod time.")
+        // 2. Fallback: Extract date from filename patterns like IMG-20160911 or VID_20161126
+        val filenameDate = extractDateFromFilename(fallbackFile.name)
+        if (filenameDate != null) {
+            return TakeoutMetadata(timestamp = filenameDate)
+        }
+
+        // 3. Final Fallback: File system modification time
         val fallbackInstant = Instant.ofEpochMilli(fallbackFile.lastModified()).toString()
         return TakeoutMetadata(timestamp = fallbackInstant)
+    }
+
+    private fun extractDateFromFilename(fileName: String): String? {
+        // Matches patterns like YYYYMMDD (e.g., 20160911) in filenames
+        val regex = Regex("(?:20\\d{2})(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\\d|3[01])")
+        val match = regex.find(fileName)?.value ?: return null
+
+        try {
+            val year = match.substring(0, 4).toInt()
+            val month = match.substring(4, 6).toInt()
+            val day = match.substring(6, 8).toInt()
+
+            // Construct a default ISO timestamp at 12:00:00 UTC for the extracted date
+            return Instant.parse(String.format("%04d-%02d-%02dT12:00:00Z", year, month, day)).toString()
+        } catch (e: Exception) {
+            return null
+        }
     }
 
     private suspend fun assignToAlbum(albumName: String, assetId: String) {
