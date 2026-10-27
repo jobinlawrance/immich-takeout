@@ -14,7 +14,7 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.serialization.json.Json
 import java.io.File
 import java.time.Instant
-import java.util.concurrent.atomic.AtomicInteger  // <--- Make sure this import is at the top of your file
+import java.util.concurrent.atomic.AtomicInteger
 
 class ImmichMigrationEngine(
     private val serverUrl: String,
@@ -31,19 +31,18 @@ class ImmichMigrationEngine(
         }
     }
 
+    private val jsonParser = Json { ignoreUnknownKeys = true }
+    private val albumCache = mutableMapOf<String, String>() // Album Name -> Immich ID
+
     private fun printProgress(completed: Int, total: Int, currentFile: String) {
         val percentage = if (total > 0) (completed * 100) / total else 0
         val truncatedName = if (currentFile.length > 35) "${currentFile.take(32)}..." else currentFile.padEnd(35)
-        // \r returns the cursor to the beginning of the line to overwrite it cleanly
         print("\r[Progress] [$completed/$total] ($percentage%) Uploading: $truncatedName")
-        System.out.flush() // Crucial for immediate terminal rendering
+        System.out.flush()
         if (completed == total) {
-            println() // Print a final newline when finished
+            println()
         }
     }
-
-    private val jsonParser = Json { ignoreUnknownKeys = true }
-    private val albumCache = mutableMapOf<String, String>() // Album Name -> Immich ID
 
     suspend fun execute() = coroutineScope {
         syncServerState()
@@ -52,34 +51,28 @@ class ImmichMigrationEngine(
         val totalItems = unsynced.size
         println("Found $totalItems items to upload to Immich.")
 
-        val semaphore = Semaphore(concurrency)
-        val completedCount = AtomicInteger(0)
-
-        unsynced.forEach { record ->
-            launch(Dispatchers.IO) {
-                semaphore.acquire()
-                try {
-                    uploadAsset(record)
-                    val currentCount = completedCount.incrementAndGet()
-                    printProgress(currentCount, totalItems, record.fileName)
-                } catch (e: Exception) {
-                    val currentCount = completedCount.incrementAndGet()
-                    printProgress(currentCount, totalItems, record.fileName)
-                    // Optionally log error without breaking progress line:
-                    // println("\nError uploading ${record.fileName}: ${e.message}")
-                } finally {
-                    semaphore.release()
-                }
-            }
-        }
+//        val semaphore = Semaphore(concurrency)
+//        val completedCount = AtomicInteger(0)
+//
+//        unsynced.forEach { record ->
+//            launch(Dispatchers.IO) {
+//                semaphore.acquire()
+//                try {
+//                    uploadAsset(record)
+//                } catch (e: Exception) {
+//                    println("\nError uploading ${record.fileName}: ${e.message}")
+//                } finally {
+//                    val currentCount = completedCount.incrementAndGet()
+//                    printProgress(currentCount, totalItems, record.fileName)
+//                    semaphore.release()
+//                }
+//            }
+//        }
     }
 
     private suspend fun syncServerState() {
         println("Syncing existing assets from Immich server...")
         try {
-            // Immich requires search parameters or uses /api/search/metadata or paginated assets.
-            // If /api/assets returns a search object or requires query params, catch it gracefully
-            // so it doesn't crash the migration.
             val response = client.get("$serverUrl/api/assets") {
                 header("x-api-key", apiKey)
             }
@@ -113,7 +106,7 @@ class ImmichMigrationEngine(
             return
         }
 
-        // Parse metadata or fallback to file system modification time to satisfy Immich requirements
+        // Parse metadata with sidecar, filename date regex fallback, and filesystem mod time last
         val metadata = parseSidecar(record.jsonSidecarPath, file)
 
         val response = client.submitFormWithBinaryData(
@@ -147,7 +140,7 @@ class ImmichMigrationEngine(
                 assignToAlbum(record.albumName, createdAsset.id)
             }
         } else {
-            throw Exception("${response.status} - ${response.bodyAsText()}")
+            throw Exception("${response.status}: ${response.bodyAsText()}")
         }
     }
 
@@ -167,7 +160,7 @@ class ImmichMigrationEngine(
                     )
                 }
             } catch (e: Exception) {
-                // Ignore JSON parsing errors and move to filename/filesystem fallbacks
+                // Ignore JSON parsing errors and move to filename fallback
             }
         }
 
@@ -192,7 +185,6 @@ class ImmichMigrationEngine(
             val month = match.substring(4, 6).toInt()
             val day = match.substring(6, 8).toInt()
 
-            // Construct a default ISO timestamp at 12:00:00 UTC for the extracted date
             return Instant.parse(String.format("%04d-%02d-%02dT12:00:00Z", year, month, day)).toString()
         } catch (e: Exception) {
             return null
@@ -228,8 +220,6 @@ class ImmichMigrationEngine(
         return null
     }
 
-    private val TakeoutRecord.jsonSidecarState: String? get() = this.jsonSidecarPath
-
     private fun getMimeType(fileName: String): String {
         return when {
             fileName.endsWith(".jpg", true) || fileName.endsWith(".jpeg", true) -> "image/jpeg"
@@ -244,4 +234,3 @@ class ImmichMigrationEngine(
         client.close()
     }
 }
-
