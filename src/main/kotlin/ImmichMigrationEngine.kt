@@ -59,27 +59,27 @@ class ImmichMigrationEngine(
         val totalItems = unsynced.size
         println("Found $totalItems items to upload to Immich.")
 
-//        val semaphore = Semaphore(concurrency)
-//        val completedCount = AtomicInteger(0)
-//
-//        unsynced.forEach { record ->
-//            launch(Dispatchers.IO) {
-//                semaphore.acquire()
-//                val file = File(record.filePath)
-//                val fileSize = if (file.exists()) file.length() else 0L
-//                try {
-//                    uploadAsset(record, file)
-//                    db.updateStatus(record.sha256, "COMPLETED")
-//                } catch (e: Exception) {
-//                    db.updateStatus(record.sha256, "FAILED")
-//                    println("\nError uploading ${record.fileName}: ${e.message}")
-//                } finally {
-//                    val currentCount = completedCount.incrementAndGet()
-//                    printProgress(currentCount, totalItems, record.fileName, fileSize)
-//                    semaphore.release()
-//                }
-//            }
-//        }
+        val semaphore = Semaphore(concurrency)
+        val completedCount = AtomicInteger(0)
+
+        unsynced.forEach { record ->
+            launch(Dispatchers.IO) {
+                semaphore.acquire()
+                val file = File(record.filePath)
+                val fileSize = if (file.exists()) file.length() else 0L
+                try {
+                    uploadAsset(record, file)
+                    db.updateStatus(record.sha256, "COMPLETED")
+                } catch (e: Exception) {
+                    db.updateStatus(record.sha256, "FAILED")
+                    println("\nError uploading ${record.fileName}: ${e.message}")
+                } finally {
+                    val currentCount = completedCount.incrementAndGet()
+                    printProgress(currentCount, totalItems, record.fileName, fileSize)
+                    semaphore.release()
+                }
+            }
+        }
     }
 
     private suspend fun syncServerState() {

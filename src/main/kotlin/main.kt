@@ -16,7 +16,7 @@ suspend fun main(args: Array<String>) {
 
     // Step 2: Run async migration engine with DuckDB diffing
     val engine = ImmichMigrationEngine(immichUrl, apiKey, db, concurrency = 6)
-    engine.execute()
+//    engine.execute()
 
     engine.close()
     db.close()
