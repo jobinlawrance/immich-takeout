@@ -12,7 +12,7 @@ suspend fun main(args: Array<String>) {
 
     // Step 1: Scan local files using Okio and save state to DuckDB
     val scanner = TakeoutScanner(takeoutDir, db)
-    scanner.scan()
+//    scanner.scan()
 
     // Step 2: Run async migration engine with DuckDB diffing
     val engine = ImmichMigrationEngine(immichUrl, apiKey, db, concurrency = 6)
