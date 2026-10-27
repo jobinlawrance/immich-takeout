@@ -1,7 +1,0 @@
-ktor:
-  deployment:
-    port: 8080
-  application:
-    modules:
-      - wtf.jobin.SerializationKt.configureSerialization
-      - wtf.jobin.RoutingKt.configureRouting
