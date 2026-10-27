@@ -49,7 +49,10 @@ data class TakeoutRecord(
     val fileName: String,
     val sha256: String,
     val albumName: String?,
-    val jsonSidecarPath: String?
+    val jsonSidecarPath: String?,
+    val fileCreatedAt: String?,
+    val latitude: Double?,
+    val longitude: Double?
 )
 
 data class TakeoutMetadata(

@@ -13,8 +13,8 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.serialization.json.Json
 import java.io.File
-import java.time.Instant
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 
 class ImmichMigrationEngine(
     private val serverUrl: String,
@@ -27,17 +27,25 @@ class ImmichMigrationEngine(
             json(Json { ignoreUnknownKeys = true; isLenient = true })
         }
         engine {
-            requestTimeout = 60_000 // 60 seconds per file upload
+            requestTimeout = 60_000
         }
     }
 
     private val jsonParser = Json { ignoreUnknownKeys = true }
-    private val albumCache = mutableMapOf<String, String>() // Album Name -> Immich ID
+    private val albumCache = mutableMapOf<String, String>()
 
-    private fun printProgress(completed: Int, total: Int, currentFile: String) {
+    private val startTime = System.currentTimeMillis()
+    private val totalBytesUploaded = AtomicLong(0L)
+
+    private fun printProgress(completed: Int, total: Int, currentFile: String, fileSize: Long) {
+        val currentBytes = totalBytesUploaded.addAndGet(fileSize)
+        val elapsedSecs = (System.currentTimeMillis() - startTime) / 1000.0
+        val mbps = if (elapsedSecs > 0) (currentBytes.toDouble() / (1024 * 1024)) / elapsedSecs else 0.0
+
         val percentage = if (total > 0) (completed * 100) / total else 0
-        val truncatedName = if (currentFile.length > 35) "${currentFile.take(32)}..." else currentFile.padEnd(35)
-        print("\r[Progress] [$completed/$total] ($percentage%) Uploading: $truncatedName")
+        val truncatedName = if (currentFile.length > 28) "${currentFile.take(25)}..." else currentFile.padEnd(28)
+
+        print(String.format("\r[Progress] [%d/%d] (%d%%) | %.2f MB/s | %s", completed, total, percentage, mbps, truncatedName))
         System.out.flush()
         if (completed == total) {
             println()
@@ -57,13 +65,17 @@ class ImmichMigrationEngine(
 //        unsynced.forEach { record ->
 //            launch(Dispatchers.IO) {
 //                semaphore.acquire()
+//                val file = File(record.filePath)
+//                val fileSize = if (file.exists()) file.length() else 0L
 //                try {
-//                    uploadAsset(record)
+//                    uploadAsset(record, file)
+//                    db.updateStatus(record.sha256, "COMPLETED")
 //                } catch (e: Exception) {
+//                    db.updateStatus(record.sha256, "FAILED")
 //                    println("\nError uploading ${record.fileName}: ${e.message}")
 //                } finally {
 //                    val currentCount = completedCount.incrementAndGet()
-//                    printProgress(currentCount, totalItems, record.fileName)
+//                    printProgress(currentCount, totalItems, record.fileName, fileSize)
 //                    semaphore.release()
 //                }
 //            }
@@ -97,18 +109,14 @@ class ImmichMigrationEngine(
         }
     }
 
-    private suspend fun uploadAsset(record: TakeoutRecord) {
-        val file = File(record.filePath)
+    private suspend fun uploadAsset(record: TakeoutRecord, file: File) {
         if (!file.exists()) return
 
-        // Skip unsupported file extensions like Motion Photo metadata wrappers (.MP)
         if (record.fileName.endsWith(".MP", ignoreCase = true)) {
             return
         }
 
-        // Parse metadata with sidecar, filename date regex fallback, and filesystem mod time last
-        val metadata = parseSidecar(record.jsonSidecarPath, file)
-
+        // Directly reading pre-computed metadata columns from DuckDB record
         val response = client.submitFormWithBinaryData(
             url = "$serverUrl/api/assets",
             formData = formData {
@@ -119,14 +127,14 @@ class ImmichMigrationEngine(
                 append("deviceAssetId", "takeout-${record.sha256}")
                 append("deviceId", "kotlin-takeout-migrator")
 
-                // Always provide valid ISO 8601 strings to satisfy Immich validation
-                metadata.timestamp?.let {
+                // Read timestamp directly from record column populated during indexing
+                record.fileCreatedAt?.let {
                     append("fileCreatedAt", it)
                     append("fileModifiedAt", it)
                 }
 
-                metadata.latitude?.let { append("latitude", it.toString()) }
-                metadata.longitude?.let { append("longitude", it.toString()) }
+                record.latitude?.let { append("latitude", it.toString()) }
+                record.longitude?.let { append("longitude", it.toString()) }
             }
         ) {
             header("x-api-key", apiKey)
@@ -141,53 +149,6 @@ class ImmichMigrationEngine(
             }
         } else {
             throw Exception("${response.status}: ${response.bodyAsText()}")
-        }
-    }
-
-    private fun parseSidecar(jsonPath: String?, fallbackFile: File): TakeoutMetadata {
-        // 1. Try reading from JSON sidecar first
-        if (jsonPath != null) {
-            try {
-                val jsonString = File(jsonPath).readText()
-                val sidecar = jsonParser.decodeFromString<TakeoutSidecar>(jsonString)
-                val epochSec = sidecar.photoTakenTime?.timestamp?.toLongOrNull()
-                if (epochSec != null && epochSec > 0) {
-                    val isoTimestamp = Instant.ofEpochSecond(epochSec).toString()
-                    return TakeoutMetadata(
-                        timestamp = isoTimestamp,
-                        latitude = sidecar.geoData?.latitude?.takeIf { it != 0.0 },
-                        longitude = sidecar.geoData?.longitude?.takeIf { it != 0.0 }
-                    )
-                }
-            } catch (e: Exception) {
-                // Ignore JSON parsing errors and move to filename fallback
-            }
-        }
-
-        // 2. Fallback: Extract date from filename patterns like IMG-20160911 or VID_20161126
-        val filenameDate = extractDateFromFilename(fallbackFile.name)
-        if (filenameDate != null) {
-            return TakeoutMetadata(timestamp = filenameDate)
-        }
-
-        // 3. Final Fallback: File system modification time
-        val fallbackInstant = Instant.ofEpochMilli(fallbackFile.lastModified()).toString()
-        return TakeoutMetadata(timestamp = fallbackInstant)
-    }
-
-    private fun extractDateFromFilename(fileName: String): String? {
-        // Matches patterns like YYYYMMDD (e.g., 20160911) in filenames
-        val regex = Regex("(?:20\\d{2})(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\\d|3[01])")
-        val match = regex.find(fileName)?.value ?: return null
-
-        try {
-            val year = match.substring(0, 4).toInt()
-            val month = match.substring(4, 6).toInt()
-            val day = match.substring(6, 8).toInt()
-
-            return Instant.parse(String.format("%04d-%02d-%02dT12:00:00Z", year, month, day)).toString()
-        } catch (e: Exception) {
-            return null
         }
     }
 

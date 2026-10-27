@@ -14,6 +14,9 @@ class MigrationStateDb(dbPath: String = "migration_state.duckdb") {
             CREATE TABLE IF NOT EXISTS local_takeout (
                 file_path VARCHAR PRIMARY KEY,
                 file_name VARCHAR,
+                file_created_at VARCHAR,
+                latitude DOUBLE,
+                longitude DOUBLE,
                 sha256 VARCHAR,
                 file_size UBIGINT,
                 album_name VARCHAR,
@@ -29,17 +32,33 @@ class MigrationStateDb(dbPath: String = "migration_state.duckdb") {
         """)
     }
 
-    fun registerLocalFile(path: String, name: String, sha256: String, size: Long, album: String?, jsonPath: String?) {
+    fun registerLocalFile(
+        path: String,
+        name: String,
+        sha256: String,
+        size: Long,
+        album: String?,
+        jsonPath: String?,
+        fileCreatedAt: String?,
+        latitude: Double?,
+        longitude: Double?
+    ) {
         val pstmt = connection.prepareStatement("""
-            INSERT OR REPLACE INTO local_takeout (file_path, file_name, sha256, file_size, album_name, json_sidecar_path)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT OR REPLACE INTO local_takeout 
+            (file_path, file_name, file_created_at, latitude, longitude, sha256, file_size, album_name, json_sidecar_path)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """)
         pstmt.setString(1, path)
         pstmt.setString(2, name)
-        pstmt.setString(3, sha256)
-        pstmt.setLong(4, size)
-        pstmt.setString(5, album)
-        pstmt.setString(6, jsonPath)
+        pstmt.setString(3, fileCreatedAt)
+
+        if (latitude != null) pstmt.setDouble(4, latitude) else pstmt.setNull(4, java.sql.Types.DOUBLE)
+        if (longitude != null) pstmt.setDouble(5, longitude) else pstmt.setNull(5, java.sql.Types.DOUBLE)
+
+        pstmt.setString(6, sha256)
+        pstmt.setLong(7, size)
+        pstmt.setString(8, album)
+        pstmt.setString(9, jsonPath)
         pstmt.executeUpdate()
     }
 
@@ -51,6 +70,13 @@ class MigrationStateDb(dbPath: String = "migration_state.duckdb") {
         pstmt.setString(1, id)
         pstmt.setString(2, checksum ?: "")
         pstmt.setString(3, fileName)
+        pstmt.executeUpdate()
+    }
+
+    fun updateStatus(sha256: String, status: String) {
+        val pstmt = connection.prepareStatement("UPDATE local_takeout SET status = ? WHERE sha256 = ?")
+        pstmt.setString(1, status)
+        pstmt.setString(2, sha256)
         pstmt.executeUpdate()
     }
 
@@ -68,7 +94,10 @@ class MigrationStateDb(dbPath: String = "migration_state.duckdb") {
                 fileName = rs.getString("file_name"),
                 sha256 = rs.getString("sha256"),
                 albumName = rs.getString("album_name"),
-                jsonSidecarPath = rs.getString("json_sidecar_path")
+                jsonSidecarPath = rs.getString("json_sidecar_path"),
+                fileCreatedAt = rs.getString("file_created_at"),
+                latitude = rs.getObject("latitude")?.let { (it as Number).toDouble() },
+                longitude = rs.getObject("longitude")?.let { (it as Number).toDouble() }
             ))
         }
         return list
